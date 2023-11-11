@@ -24,6 +24,8 @@ using NINA.Core.Utility.Notification;
 using NINA.Equipment.Equipment.MyDome;
 using NINA.Equipment.Interfaces;
 using NINA.Sequencer.Interfaces.Mediator;
+using NINA.ViewModel.Sequencer;
+using Accord.Statistics.Kernels;
 
 namespace Photon.NINA.SafteyGuard {
 
@@ -41,13 +43,21 @@ namespace Photon.NINA.SafteyGuard {
         private readonly IDomeMediator domeMediator;
         private readonly ISafetyMonitorMediator safetyMonitorMediator;
         private readonly ISequenceMediator sequenceMediator;
-        private readonly IApplicationMediator applicationMediator;
 
         private string pluginName = "SafetyGuard";
         private static DateTime programStartTime = DateTime.Now;
         private static TimeSpan initialDelay = TimeSpan.FromSeconds(10);
 
+        private bool startupFinished = false;
+        private bool safteyMonitorConnected = false;
+        private bool domeConnected = false;
+
+        private int unsafeTriggerCounter = 0;
+
         private uint repeatErrorDelay = 60;
+
+        private DomeInfo domeInfo = null;
+        private SafetyMonitorInfo safetyMonitorInfo = null;
 
         private ShutterState domeStatus;
         private DateTime lastUpdateTime = DateTime.MinValue;
@@ -56,15 +66,13 @@ namespace Photon.NINA.SafteyGuard {
         public Safteyguard(IOptionsVM options,
                            ISafetyMonitorMediator safetyMonitorMediator,
                            IDomeMediator domeMediator,
-                           ISequenceMediator sequenceMediator,
-                           IApplicationMediator applicationMediator) {
+                           ISequenceMediator sequenceMediator
+                           ) {
             if (Settings.Default.UpdateSettings) {
                 Settings.Default.Upgrade();
                 Settings.Default.UpdateSettings = false;
                 CoreUtil.SaveSettings(Settings.Default);
             }
-
-            this.applicationMediator = applicationMediator;
 
             this.safetyMonitorMediator = safetyMonitorMediator;
             safetyMonitorMediator.RegisterConsumer(this);
@@ -75,65 +83,93 @@ namespace Photon.NINA.SafteyGuard {
             this.sequenceMediator = sequenceMediator;
 
             Logger.Info("Starting plugin");
-            Notification.ShowInformation($"{pluginName} started");
+            //Notification.ShowInformation($"{pluginName} started");
+        }
+
+        public bool IsSafe {
+            get {
+                if (domeInfo?.Connected == false) {
+                    return false;
+                }
+
+                if (safetyMonitorInfo?.Connected == false) {
+                    return false;
+                }
+
+                if (safetyMonitorInfo?.IsSafe == false &&
+                    domeInfo?.ShutterStatus != ShutterState.ShutterClosed) {
+                    return false;
+                }
+
+                return true;
+            }
+        }
+
+        public bool StartupFinished {
+            get {
+                if (DateTime.Now - programStartTime < initialDelay) {
+                    lastUpdateTime = DateTime.UtcNow;
+                    return false;
+                }
+
+                if (domeInfo?.Connected == true) {
+                    domeConnected = true;
+                }
+
+                if (safetyMonitorInfo?.Connected == true) {
+                    safteyMonitorConnected = true;
+                }
+
+                return (domeConnected && safteyMonitorConnected);
+            }
         }
 
         public void CheckIfSafe() {
-            if (DateTime.Now - programStartTime < initialDelay) {
-                lastUpdateTime = DateTime.UtcNow;
+            if (!StartupFinished)
                 return;
+
+            if (IsSafe && unsafeTriggerCounter > 0) {
+                unsafeTriggerCounter = 0;
+                Safe();
             }
 
-            bool isSafe = false;
+            if (!IsSafe) {
+                if (unsafeTriggerCounter == 0 ||
+                    DateTime.UtcNow - lastUpdateTime > TimeSpan.FromSeconds(repeatErrorDelay)) {
+                    Unsafe();
 
-            DomeInfo domeInfo = null;
-            SafetyMonitorInfo safetyMonitorInfo = null;
-            string response = String.Empty;
-
-            try {
-                domeInfo = domeMediator.GetInfo();
-                safetyMonitorInfo = safetyMonitorMediator.GetInfo();
-            } catch (Exception) {
-                Logger.Info("Not yet loaded");
-                return;
-            }
-
-            Logger.Info("Checking Dome");
-            if (domeInfo?.Connected == false) {
-                response += "Dome not connected!";
-                isSafe = false;
-            }
-
-            Logger.Info("Checking SafteyMonitor");
-            if (safetyMonitorInfo?.Connected == false) {
-                response += "Safety Monitor not connected!";
-                isSafe = false;
-            }
-
-            Logger.Info("Checking isSafe");
-            if (safetyMonitorInfo?.IsSafe == false &&
-                domeInfo?.ShutterStatus != ShutterState.ShutterClosed) {
-                response = "Status became unsafe";
-                isSafe = false;
-            }
-
-            if (!isSafe && DateTime.UtcNow - lastUpdateTime < TimeSpan.FromSeconds(repeatErrorDelay)) {
-                Unsafe(response);
-
-                lastUpdateTime = DateTime.UtcNow;
+                    lastUpdateTime = DateTime.UtcNow;
+                    unsafeTriggerCounter++;
+                }
             }
         }
 
         public void UpdateDeviceInfo(DomeInfo domeInfo) {
+            this.domeInfo = domeInfo;
             CheckIfSafe();
         }
 
         public void UpdateDeviceInfo(SafetyMonitorInfo safteyInfo) {
+            this.safetyMonitorInfo = safteyInfo;
             CheckIfSafe();
         }
 
-        public void Unsafe(string response) {
-            Notification.ShowWarning($"{pluginName} - {response}");
+        /// <summary>
+        /// When it returns to safe condition, we can resume our sequence
+        /// </summary>
+        public void Safe() {
+            Logger.Info("The conditions have reverted to a safe state.");
+            Notification.ShowInformation($"{pluginName} - The conditions have reverted to a safe state.");
+        }
+
+        /// <summary>
+        /// When it becomes unsafe, running sequence should be stopped
+        /// * Park scope & dome
+        /// * Execute predefined sequence
+        /// </summary>
+        public void Unsafe() {
+            Logger.Warning("Conditions became unsafe");
+            Notification.ShowWarning($"{pluginName} - Conditions became unsafe");
 
             //sequenceMediator.RegisterSequenceNavigation;
             // Pause sequence

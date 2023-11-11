@@ -9,11 +9,15 @@
         <StackPanel Orientation="Vertical">
             <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Trigger external script" />
-                <TextBox MinWidth="50" Text="{Binding DefaultNotificationMessage}" />
+                <TextBox MinWidth="50" Text="{Binding ExternalScript}" />
             </StackPanel>
             <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Profile Specific Notification Message" />
                 <TextBox MinWidth="50" Text="{Binding ProfileSpecificNotificationMessage}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="Startup delay" />
+                <TextBox MinWidth="50" Text="{Binding StartupDelay}" />
             </StackPanel>
         </StackPanel>
     </DataTemplate>
